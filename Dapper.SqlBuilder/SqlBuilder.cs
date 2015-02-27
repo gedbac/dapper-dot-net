@@ -1,27 +1,26 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Dapper
 {
     public class SqlBuilder
     {
-        Dictionary<string, Clauses> data = new Dictionary<string, Clauses>();
-        int seq;
+        private readonly Dictionary<string, Clauses> data = new Dictionary<string, Clauses>();
+        private int sequance;
 
-        class Clause
+        private class Clause
         {
             public string Sql { get; set; }
             public object Parameters { get; set; }
             public bool IsInclusive { get; set; }
         }
 
-        class Clauses : List<Clause>
+        private class Clauses : List<Clause>
         {
-            string joiner;
-            string prefix;
-            string postfix;
+            private readonly string joiner;
+            private readonly string prefix;
+            private readonly string postfix;
 
             public Clauses(string joiner, string prefix = "", string postfix = "")
             {
@@ -30,18 +29,19 @@ namespace Dapper
                 this.postfix = postfix;
             }
 
-            public string ResolveClauses(DynamicParameters p)
+            public string ResolveClauses(DynamicParameters parameters)
             {
-                foreach (var item in this)
+                foreach (var clause in this)
                 {
-                    p.AddDynamicParams(item.Parameters);
+                    parameters.AddDynamicParams(clause.Parameters);
                 }
+
                 return this.Any(a => a.IsInclusive)
                     ? prefix +
                       string.Join(joiner,
                           this.Where(a => !a.IsInclusive)
                               .Select(c => c.Sql)
-                              .Union(new[]
+                              .Union(new []
                               {
                                   " ( " +
                                   string.Join(" OR ", this.Where(a => a.IsInclusive).Select(c => c.Sql).ToArray()) +
@@ -53,26 +53,46 @@ namespace Dapper
 
         public class Template
         {
-            readonly string sql;
-            readonly SqlBuilder builder;
-            readonly object initParams;
-            int dataSeq = -1; // Unresolved
+            private readonly string sql;
+            private readonly SqlBuilder builder;
+            private readonly object initialParameters;
+            private int sequance = -1; // Unresolved
+            private static readonly Regex Regex = new Regex(@"\/\*\*.+\*\*\/", RegexOptions.Compiled | RegexOptions.Multiline);
+            private string rawSql;
+            private object parameters;
 
             public Template(SqlBuilder builder, string sql, dynamic parameters)
             {
-                this.initParams = parameters;
+                this.initialParameters = parameters;
                 this.sql = sql;
                 this.builder = builder;
             }
 
-            static System.Text.RegularExpressions.Regex regex =
-                new System.Text.RegularExpressions.Regex(@"\/\*\*.+\*\*\/", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.Multiline);
-
-            void ResolveSql()
+            public string RawSql
             {
-                if (dataSeq != builder.seq)
+                get
                 {
-                    DynamicParameters p = new DynamicParameters(initParams);
+                    ResolveSql(); 
+
+                    return rawSql;
+                }
+            }
+
+            public object Parameters
+            {
+                get
+                {
+                    ResolveSql(); 
+
+                    return parameters;
+                }
+            }
+
+            private void ResolveSql()
+            {
+                if (sequance != builder.sequance)
+                {
+                    var p = new DynamicParameters(initialParameters);
 
                     rawSql = sql;
 
@@ -80,25 +100,15 @@ namespace Dapper
                     {
                         rawSql = rawSql.Replace("/**" + pair.Key + "**/", pair.Value.ResolveClauses(p));
                     }
+
                     parameters = p;
 
                     // replace all that is left with empty
-                    rawSql = regex.Replace(rawSql, "");
+                    rawSql = Regex.Replace(rawSql, "");
 
-                    dataSeq = builder.seq;
+                    sequance = builder.sequance;
                 }
             }
-
-            string rawSql;
-            object parameters;
-
-            public string RawSql { get { ResolveSql(); return rawSql; } }
-            public object Parameters { get { ResolveSql(); return parameters; } }
-        }
-
-
-        public SqlBuilder()
-        {
         }
 
         public Template AddTemplate(string sql, dynamic parameters = null)
@@ -106,7 +116,7 @@ namespace Dapper
             return new Template(this, sql, parameters);
         }
 
-        void AddClause(string name, string sql, object parameters, string joiner, string prefix = "", string postfix = "", bool IsInclusive = false)
+        public SqlBuilder AddClause(string name, string sql, dynamic parameters = null, string joiner = "", string prefix = "", string postfix = "", bool inclusive = false)
         {
             Clauses clauses;
             if (!data.TryGetValue(name, out clauses))
@@ -114,80 +124,69 @@ namespace Dapper
                 clauses = new Clauses(joiner, prefix, postfix);
                 data[name] = clauses;
             }
-            clauses.Add(new Clause { Sql = sql, Parameters = parameters, IsInclusive = IsInclusive });
-            seq++;
+            clauses.Add(new Clause { Sql = sql, Parameters = parameters, IsInclusive = inclusive });
+            sequance++;
+            return this;
         }
 
         public SqlBuilder Intersect(string sql, dynamic parameters = null)
         {
-            AddClause("intersect", sql, parameters, joiner: "\nINTERSECT\n ", prefix: "\n ", postfix: "\n");
-            return this;
+            return AddClause("intersect", sql, parameters, joiner: "\nINTERSECT\n ", prefix: "\n ", postfix: "\n");
         }
         
         public SqlBuilder InnerJoin(string sql, dynamic parameters = null)
         {
-            AddClause("innerjoin", sql, parameters, joiner: "\nINNER JOIN ", prefix: "\nINNER JOIN ", postfix: "\n");
-            return this;
+            return AddClause("innerjoin", sql, parameters, joiner: "\nINNER JOIN ", prefix: "\nINNER JOIN ", postfix: "\n");
         }
 
         public SqlBuilder LeftJoin(string sql, dynamic parameters = null)
         {
-            AddClause("leftjoin", sql, parameters, joiner: "\nLEFT JOIN ", prefix: "\nLEFT JOIN ", postfix: "\n");
-            return this;
+            return AddClause("leftjoin", sql, parameters, joiner: "\nLEFT JOIN ", prefix: "\nLEFT JOIN ", postfix: "\n");
         }
 
         public SqlBuilder RightJoin(string sql, dynamic parameters = null)
         {
-            AddClause("rightjoin", sql, parameters, joiner: "\nRIGHT JOIN ", prefix: "\nRIGHT JOIN ", postfix: "\n");
-            return this;
+            return AddClause("rightjoin", sql, parameters, joiner: "\nRIGHT JOIN ", prefix: "\nRIGHT JOIN ", postfix: "\n");
         }
 
         public SqlBuilder Where(string sql, dynamic parameters = null)
         {
-            AddClause("where", sql, parameters, " AND ", prefix: "WHERE ", postfix: "\n");
-            return this;
+            return AddClause("where", sql, parameters, " AND ", prefix: "WHERE ", postfix: "\n");
         }
 
         public SqlBuilder OrWhere(string sql, dynamic parameters = null)
         {
-            AddClause("where", sql, parameters, " AND ", prefix: "WHERE ", postfix: "\n", IsInclusive: true);
-            return this;
+            return AddClause("where", sql, parameters, " AND ", prefix: "WHERE ", postfix: "\n", inclusive: true);
         }
         
         public SqlBuilder OrderBy(string sql, dynamic parameters = null)
         {
-            AddClause("orderby", sql, parameters, " , ", prefix: "ORDER BY ", postfix: "\n");
-            return this;
+            return AddClause("orderby", sql, parameters, ", ", prefix: "ORDER BY ", postfix: "\n");
         }
 
         public SqlBuilder Select(string sql, dynamic parameters = null)
         {
-            AddClause("select", sql, parameters, " , ", prefix: "", postfix: "\n");
-            return this;
+            return AddClause("select", sql, parameters, ", ", prefix: "", postfix: "\n");
         }
 
         public SqlBuilder AddParameters(dynamic parameters)
         {
-            AddClause("--parameters", "", parameters, "");
-            return this;
+            return AddClause("--parameters", "", parameters, "");
         }
 
         public SqlBuilder Join(string sql, dynamic parameters = null)
         {
-            AddClause("join", sql, parameters, joiner: "\nJOIN ", prefix: "\nJOIN ", postfix: "\n");
-            return this;
+            return AddClause("join", sql, parameters, joiner: "\nJOIN ", prefix: "\nJOIN ", postfix: "\n");
         }
 
         public SqlBuilder GroupBy(string sql, dynamic parameters = null)
         {
-            AddClause("groupby", sql, parameters, joiner: " , ", prefix: "\nGROUP BY ", postfix: "\n");
-            return this;
+            return AddClause("groupby", sql, parameters, joiner: " , ", prefix: "\nGROUP BY ", postfix: "\n");
         }
 
         public SqlBuilder Having(string sql, dynamic parameters = null)
         {
-            AddClause("having", sql, parameters, joiner: "\nAND ", prefix: "HAVING ", postfix: "\n");
-            return this;
+            return AddClause("having", sql, parameters, joiner: "\nAND ", prefix: "HAVING ", postfix: "\n");
         }
     }
 }
